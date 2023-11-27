@@ -115,17 +115,29 @@ public class PostgresMemoryStoreTests
         var batchUpsertMemoryRecords = new[] { memoryRecord1, memoryRecord2, memoryRecord3 };
         var expectedMemoryRecordKeys = batchUpsertMemoryRecords.Select(l => l.Key).ToList();
 
+        this._postgresDbClientMock.Setup(client =>
+            client.UpsertBatchAsync(
+                CollectionName,
+                It.IsAny<IEnumerable<PostgresMemoryEntry>>(),
+                CancellationToken.None))
+            .Callback<string, IEnumerable<PostgresMemoryEntry>, CancellationToken>((_, e, _) => _ = e.ToList())
+            .Returns(Task.CompletedTask);
+
         using var store = new PostgresMemoryStore(this._postgresDbClientMock.Object);
 
         // Act
         var actualMemoryRecordKeys = await store.UpsertBatchAsync(CollectionName, batchUpsertMemoryRecords).ToListAsync();
 
         // Assert
-        foreach (var memoryRecord in batchUpsertMemoryRecords)
-        {
-            var postgresMemoryEntry = this.GetPostgresMemoryEntryFromMemoryRecord(memoryRecord)!;
-            this._postgresDbClientMock.Verify(client => client.UpsertAsync(CollectionName, postgresMemoryEntry.Key, postgresMemoryEntry.MetadataString, It.Is<Pgvector.Vector>(x => x.ToArray().SequenceEqual(postgresMemoryEntry.Embedding!.ToArray())), postgresMemoryEntry.Timestamp, CancellationToken.None), Times.Once());
-        }
+        var postgresMemoryEntries = batchUpsertMemoryRecords.Select(this.GetPostgresMemoryEntryFromMemoryRecord).ToList();
+        this._postgresDbClientMock.Verify(client =>
+            client.UpsertBatchAsync(
+                CollectionName,
+                It.Is<IEnumerable<PostgresMemoryEntry>>(e =>
+                    e.All(x => postgresMemoryEntries.Any(me =>
+                        me.Key == x.Key && me.MetadataString == x.MetadataString && me.Timestamp == x.Timestamp &&
+                        (me.Embedding!.ToArray().SequenceEqual(x.Embedding!.ToArray()))))),
+                CancellationToken.None), Times.Once());
 
         for (int i = 0; i < expectedMemoryRecordKeys.Count; i++)
         {

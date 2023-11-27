@@ -137,6 +137,45 @@ public class PostgresDbClient : IPostgresDbClient
     }
 
     /// <inheritdoc />
+    public async Task UpsertBatchAsync(string tableName, IEnumerable<PostgresMemoryEntry> entries, CancellationToken cancellationToken = default)
+    {
+        NpgsqlConnection connection = await this._dataSource.OpenConnectionAsync(cancellationToken).ConfigureAwait(false);
+
+        await using (connection)
+        {
+            using NpgsqlCommand cmd = connection.CreateCommand();
+            cmd.CommandText = $@"
+            INSERT INTO {this.GetFullTableName(tableName)} (key, metadata, embedding, timestamp)
+            SELECT param.key, param.metadata, param.embedding, param.timestamp
+            FROM
+                UNNEST($1, $2, $3, $4)
+                param(key, metadata, embedding, timestamp)
+            ON CONFLICT (key)
+            DO UPDATE SET metadata=EXCLUDED.metadata, embedding=EXCLUDED.embedding, timestamp=EXCLUDED.timestamp";
+
+            List<string> keys = new();
+            List<string?> metdataStrings = new();
+            List<Vector?> embeddings = new();
+            List<DateTime?> timestamps = new();
+
+            foreach (var entry in entries)
+            {
+                keys.Add(entry.Key);
+                metdataStrings.Add(entry.MetadataString);
+                embeddings.Add(entry.Embedding);
+                timestamps.Add(entry.Timestamp);
+            }
+
+            cmd.Parameters.Add(new NpgsqlParameter<List<string>>() { TypedValue = keys });
+            cmd.Parameters.Add(new NpgsqlParameter<List<string?>>() { TypedValue = metdataStrings, NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Array | NpgsqlTypes.NpgsqlDbType.Jsonb });
+            cmd.Parameters.Add(new NpgsqlParameter<List<Vector?>>() { TypedValue = embeddings });
+            cmd.Parameters.Add(new NpgsqlParameter<List<DateTime?>>() { TypedValue = timestamps });
+
+            await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <inheritdoc />
     public async IAsyncEnumerable<(PostgresMemoryEntry, double)> GetNearestMatchesAsync(
         string tableName, Vector embedding, int limit, double minRelevanceScore = 0, bool withEmbeddings = false,
         [EnumeratorCancellation] CancellationToken cancellationToken = default)

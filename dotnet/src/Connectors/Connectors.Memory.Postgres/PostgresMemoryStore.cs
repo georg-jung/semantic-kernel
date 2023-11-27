@@ -101,15 +101,14 @@ public class PostgresMemoryStore : IMemoryStore, IDisposable
     }
 
     /// <inheritdoc/>
-    public async IAsyncEnumerable<string> UpsertBatchAsync(string collectionName, IEnumerable<MemoryRecord> records,
-        [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    public IAsyncEnumerable<string> UpsertBatchAsync(
+        string collectionName,
+        IEnumerable<MemoryRecord> records,
+        CancellationToken cancellationToken = default)
     {
         Verify.NotNullOrWhiteSpace(collectionName);
 
-        foreach (MemoryRecord record in records)
-        {
-            yield return await this.InternalUpsertAsync(collectionName, record, cancellationToken).ConfigureAwait(false);
-        }
+        return this.InternalUpsertBatchAsync(collectionName, records, cancellationToken);
     }
 
     /// <inheritdoc/>
@@ -235,6 +234,41 @@ public class PostgresMemoryStore : IMemoryStore, IDisposable
         return record.Key;
     }
 
+    private async IAsyncEnumerable<string> InternalUpsertBatchAsync(
+        string collectionName,
+        IEnumerable<MemoryRecord> records,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        // Attention, returning IAsyncEnumerable might be misleading here, because breaking the iteration
+        // does not cancel the batch insertion (which has already completed when the iteration starts)
+        // at that specific element.
+        // It is however impossible to change this in PostgresMemoryStore. A not potentially misleading
+        // use of IAsyncEnumerable would just be possible if the records are inserted one-by-one and not batched.
+        // Returning something like Task<IReadOnlyCollection<string>> would be more appropriate but would require
+        // changing IMemoryStore and all its implementations.
+        // This behaviour implemented here is in line with the behaviour of e.g. QdrantMemoryStore.
+        List<string> keys = new();
+        IEnumerable<PostgresMemoryEntry> EnumerateEntries()
+        {
+            foreach (var record in records)
+            {
+                record.Key = record.Metadata.Id;
+                keys.Add(record.Key);
+                yield return this.GetEntryFromMemoryRecord(record);
+            }
+        }
+
+        await this._postgresDbClient.UpsertBatchAsync(
+            tableName: collectionName,
+            EnumerateEntries(),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        foreach (var key in keys)
+        {
+            yield return key;
+        }
+    }
+
     private MemoryRecord GetMemoryRecordFromEntry(PostgresMemoryEntry entry)
     {
         return MemoryRecord.FromJsonMetadata(
@@ -243,6 +277,14 @@ public class PostgresMemoryStore : IMemoryStore, IDisposable
             key: entry.Key,
             timestamp: entry.Timestamp?.ToLocalTime());
     }
+
+    private PostgresMemoryEntry GetEntryFromMemoryRecord(MemoryRecord record) => new()
+    {
+        Key = record.Key,
+        MetadataString = record.GetSerializedMetadata(),
+        Embedding = new Vector(GetOrCreateArray(record.Embedding)),
+        Timestamp = record.Timestamp?.UtcDateTime
+    };
 
     private static float[] GetOrCreateArray(ReadOnlyMemory<float> memory) =>
         MemoryMarshal.TryGetArray(memory, out ArraySegment<float> array) &&

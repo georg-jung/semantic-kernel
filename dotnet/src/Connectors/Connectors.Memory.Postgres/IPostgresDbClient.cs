@@ -57,6 +57,15 @@ public interface IPostgresDbClient
     Task UpsertAsync(string tableName, string key, string? metadata, Vector? embedding, DateTime? timestamp, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Upsert entries into a table.
+    /// </summary>
+    /// <param name="tableName">The name assigned to a table of entries.</param>
+    /// <param name="entries">The entries to upsert in a batch operation.</param>
+    /// <param name="cancellationToken">The <see cref="CancellationToken"/> to monitor for cancellation requests. The default is <see cref="CancellationToken.None"/>.</param>
+    /// <returns></returns>
+    Task UpsertBatchAsync(string tableName, IEnumerable<PostgresMemoryEntry> entries, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Gets the nearest matches to the <see cref="Vector"/>.
     /// </summary>
     /// <param name="tableName">The name assigned to a table of entries.</param>
